@@ -32,7 +32,7 @@
 ### 第零步：下载项目
 
 ```bash
-git clone https://github.com/socialzoe/jmcomic_qq_bot.git
+git clone https://github.com/Dylan37670/jmcomic_qq_bot.git
 cd jmcomic_qq_bot
 ```
 
