@@ -19,48 +19,43 @@ class ImageToPDFConverter:
         self.delete_images = delete_images
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
 
-    def convert_album(self, album_dir: Path) -> List[Path]:
-        """转换整个本子的所有章节"""
-        logger.info(f"[转换器] 开始转换本子: {album_dir}")
+    def convert_album(self, temp_dir: Path) -> List[Path]:
+        """扫描临时目录下的所有章节，并转换成多个 PDF"""
+        logger.info(f"[转换器] 开始扫描本子目录: {temp_dir}")
         pdf_files = []
 
-        # 检查目录是否存在
-        if not album_dir.exists():
-            logger.error(f"[转换器] 目录不存在: {album_dir}")
+        if not temp_dir.exists():
+            logger.error(f"[转换器] 目录不存在: {temp_dir}")
             return pdf_files
 
-        # 检查是否有子目录（多章节）
-        subdirs = [d for d in album_dir.iterdir() if d.is_dir()]
-        logger.info(f"[转换器] 找到 {len(subdirs)} 个子目录")
+        # 找出所有包含图片的子目录
+        image_dirs = set()
+        for f in temp_dir.rglob('*'):
+            if f.is_file() and f.suffix.lower() in self.supported_formats:
+                image_dirs.add(f.parent)
 
-        if subdirs:
-            # 多章节：每个子目录是一个章节
-            logger.info(f"[转换器] 多章节模式")
-            for chapter_dir in sorted(subdirs):
-                try:
-                    logger.info(f"[转换器] 转换章节: {chapter_dir.name}")
-                    pdf_path = self.convert_chapter(chapter_dir)
-                    if pdf_path:
-                        pdf_files.append(pdf_path)
-                        logger.info(f"[转换器] 章节转换成功: {pdf_path}")
-                except Exception as e:
-                    logger.error(f"[转换器] 章节转换失败: {chapter_dir.name}, {e}", exc_info=True)
-        else:
-            # 单章节：图片直接在根目录
-            logger.info(f"[转换器] 单章节模式: {album_dir.name}")
+        def extract_dir_number(d: Path) -> int:
+            nums = re.findall(r'\d+', d.name)
+            return int(nums[-1]) if nums else 0
+            
+        sorted_dirs = sorted(list(image_dirs), key=extract_dir_number)
+        logger.info(f"[转换器] 找到了 {len(sorted_dirs)} 个包含图片的文件夹")
+
+        for chapter_dir in sorted_dirs:
             try:
-                pdf_path = self.convert_chapter(album_dir)
+                logger.info(f"[转换器] 转换章节: {chapter_dir.name}")
+                pdf_path = self.convert_chapter(chapter_dir, temp_dir)
                 if pdf_path:
                     pdf_files.append(pdf_path)
-                    logger.info(f"[转换器] 单章节转换成功: {pdf_path}")
+                    logger.info(f"[转换器] 章节转换成功: {pdf_path}")
             except Exception as e:
-                logger.error(f"[转换器] 转换失败: {album_dir.name}, {e}", exc_info=True)
+                logger.error(f"[转换器] 章节转换失败: {chapter_dir.name}, {e}", exc_info=True)
 
-        logger.info(f"[转换器] 转换完成，共 {len(pdf_files)} 个PDF")
+        logger.info(f"[转换器] 转换完成，共生成 {len(pdf_files)} 个PDF")
         return pdf_files
 
-    def convert_chapter(self, chapter_dir: Path) -> Optional[Path]:
-        """转换单个章节为PDF"""
+    def convert_chapter(self, chapter_dir: Path, output_dir: Path) -> Optional[Path]:
+        """转换单个章节为PDF并输出到指定目录"""
         try:
             images = self._get_sorted_images(chapter_dir)
 
@@ -68,7 +63,8 @@ class ImageToPDFConverter:
                 logger.warning(f"章节目录为空: {chapter_dir.name}")
                 return None
 
-            pdf_path = chapter_dir.parent / f"{chapter_dir.name}.pdf"
+            # 2. 保持原本子文件夹名称作为 PDF 名称
+            pdf_path = output_dir / f"{chapter_dir.name}.pdf"
 
             if pdf_path.exists():
                 logger.info(f"PDF已存在: {pdf_path.name}")
@@ -102,33 +98,33 @@ class ImageToPDFConverter:
         return sorted(images, key=extract_number)
 
     def _images_to_pdf(self, image_paths: List[Path], output_pdf: Path):
-        """图片转PDF（内存优化）"""
+        """图片转PDF"""
         img_list = []
 
         for img_path in image_paths:
             try:
-                img = Image.open(img_path)
-
-                # 转RGB
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    rgb_img = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'P':
-                        img = img.convert('RGBA')
-                    if img.mode in ('RGBA', 'LA'):
-                        rgb_img.paste(img, mask=img.split()[-1])
+                with Image.open(img_path) as img:
+                    img.load()  
+                    # 转RGB
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        rgb_img = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        if img.mode in ('RGBA', 'LA'):
+                            rgb_img.paste(img, mask=img.split()[-1])
+                        else:
+                            rgb_img.paste(img)
+                        img_list.append(rgb_img)
+                    elif img.mode != 'RGB':
+                        img_list.append(img.convert('RGB'))
                     else:
-                        rgb_img.paste(img)
-                    img = rgb_img
-                elif img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                img_list.append(img)
+                        img_list.append(img.copy())
 
             except Exception as e:
-                logger.warning(f"图片失败: {img_path.name}, {e}")
+                logger.warning(f"图片失败或损坏跳过: {img_path.name}, {e}")
 
         if not img_list:
-            raise ValueError("没有有效图片")
+            raise ValueError("没有有效图片可以转换")
 
         img_list[0].save(
             str(output_pdf),
@@ -139,7 +135,7 @@ class ImageToPDFConverter:
         )
 
     def _cleanup_images(self, chapter_dir: Path):
-        """清理原图片"""
+        """清理原图片(避免报错卡死)"""
         try:
             for img_path in chapter_dir.iterdir():
                 if img_path.is_file() and img_path.suffix.lower() in self.supported_formats:
@@ -149,4 +145,4 @@ class ImageToPDFConverter:
                 chapter_dir.rmdir()
 
         except Exception as e:
-            logger.error(f"清理失败: {e}")
+            logger.error(f"清理临时图片失败: {e}")
